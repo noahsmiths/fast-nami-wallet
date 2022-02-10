@@ -1,0 +1,25 @@
+send.jsx calls prepareTx
+ingests the following object:
+{value: {…}, address: {…}, message: ''}
+address:
+display: "addr1qxs03gnz320phv5sz2m9ys65wlkwcukav7kxvp8zm36c38zxt6lvzkuk6dvc7yu54zpeht7kl4v4ht6qx59xtewq8r6swwwk3j"
+result: "addr1qxs03gnz320phv5sz2m9ys65wlkwcukav7kxvp8zm36c38zxt6lvzkuk6dvc7yu54zpeht7kl4v4ht6qx59xtewq8r6swwwk3j"
+[[Prototype]]: Object
+message: ""
+value:
+ada: "1"
+assets: []
+minAda: "0"
+personalAda: "1"
+[[Prototype]]: Object
+[[Prototype]]: Object
+
+what it really uses is the following methods
+
+getUtxos: index.js
+initTx: wallet.js
+buildTx: wallet.js
+
+send.jsx uses loader to do a final transformation of the tx before the below step
+
+signAndSubmit: wallet.js
