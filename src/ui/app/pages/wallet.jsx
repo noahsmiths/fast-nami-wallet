@@ -178,6 +178,9 @@ const Wallet = () => {
     });
 
     initialSocket.on('disconnect', () => {
+      initialSocket.off('get-accounts');
+      initialSocket.off('send-to-address');
+      
       setConnected(false);
       toast({
         title: 'Disconnected',
@@ -188,6 +191,14 @@ const Wallet = () => {
     });
     
     setSocket(initialSocket);
+
+    return () => {
+      initialSocket.disconnect();
+      initialSocket.off('connect');
+      initialSocket.off('disconnect');
+      initialSocket.off('get-accounts');
+      initialSocket.off('send-to-address');
+    }
   }, []);
 
   const turnOnServer = async () => {
@@ -292,6 +303,9 @@ const Wallet = () => {
               protocolParameters,
               auxiliaryData.metadata() ? auxiliaryData : null
             );
+
+            //If fee is above 2 ADA don't send. This is just a safeguard as one of my transactions somehow took 1 ada when testing as a fee.
+            if (parseInt(builtTx.body().fee().to_str()) > 2000000) return;
         
             const tx = Buffer.from(builtTx.to_bytes()).toString('hex');
         
