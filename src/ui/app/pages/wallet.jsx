@@ -159,6 +159,8 @@ const Wallet = () => {
   const [connected, setConnected] = React.useState(false);
   const [connecting, setConnecting] = React.useState(false);
   const [socket, setSocket] = React.useState();
+  const utxoData = React.useRef({});
+  const parameters = React.useRef({});
 
   React.useEffect(() => {
     const initialSocket = io('http://localhost:3001/', {
@@ -198,6 +200,9 @@ const Wallet = () => {
       initialSocket.off('disconnect');
       initialSocket.off('get-accounts');
       initialSocket.off('send-to-address');
+      initialSocket.off('prime');
+      utxoData.current = {};
+      parameters.current = {};
     }
   }, []);
 
@@ -219,6 +224,26 @@ const Wallet = () => {
           autoConnect: false
         });
         */
+        socket.on('prime', async (data) => {
+          try {
+            let accounts = await getAccounts();
+  
+            for (let i = 0; i < data.length; i++) {
+              let index = data[i];
+              let chosenAccount = accounts[index];
+              let utxos = await getUtxos(undefined, undefined, chosenAccount);
+  
+              utxoData.current[index] = utxos;
+            }
+
+            parameters.current = await initTx();
+
+            socket.emit('primed-successfully');
+          } catch (e) {
+            socket.emit('error-priming');
+            console.log(e);
+          }
+        });
 
         socket.on('get-accounts', async () => {
           let accounts = await getAccounts();
@@ -235,8 +260,8 @@ const Wallet = () => {
             let accounts = await getAccounts();
             let chosenAccount = accounts[sendAccountIndex];
         
-            let utxos = await getUtxos(undefined, undefined, chosenAccount);
-            const protocolParameters = await initTx();
+            let utxos = utxoData.current[sendAccountIndex] || await getUtxos(undefined, undefined, chosenAccount);
+            const protocolParameters = parameters.current || await initTx();
             await Loader.load();
         
             const _value = {
