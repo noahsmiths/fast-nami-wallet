@@ -158,16 +158,16 @@ const Wallet = () => {
   //const [serverOn, setServerOn] = React.useState(false);
   const [connected, setConnected] = React.useState(false);
   const [connecting, setConnecting] = React.useState(false);
-  const [socket, setSocket] = React.useState();
+  const socket = React.useRef();
   const utxoData = React.useRef({});
-  const parameters = React.useRef({});
+  const parameters = React.useRef(null);
 
   React.useEffect(() => {
-    const initialSocket = io('http://localhost:3001/', {
+    socket.current = io('http://localhost:3001/', {
       autoConnect: false
     });
 
-    initialSocket.on('connect', () => {
+    socket.current.on('connect', () => {
       //setSocket(socket);
       setConnected(true);
       setConnecting(false);
@@ -179,12 +179,9 @@ const Wallet = () => {
       });
     });
 
-    initialSocket.on('disconnect', () => {
-      initialSocket.off('get-accounts');
-      initialSocket.off('send-to-address');
-      initialSocket.off('prime');
+    socket.current.on('disconnect', () => {
       utxoData.current = {};
-      parameters.current = {};
+      parameters.current = null;
       
       setConnected(false);
       toast({
@@ -194,23 +191,165 @@ const Wallet = () => {
         isClosable: true,
       });
     });
+
+    socket.current.on('prime', async (data) => {
+      try {
+        let accounts = await getAccounts();
+
+        for (let i = 0; i < data.length; i++) {
+          let index = data[i];
+          let chosenAccount = accounts[index];
+          let utxos = await getUtxos(undefined, undefined, chosenAccount);
+
+          utxoData.current[index] = utxos;
+        }
+
+        parameters.current = await initTx();
+
+        socket.current.emit('primed-successfully');
+      } catch (e) {
+        socket.current.emit('error-priming');
+        console.log(e);
+      }
+    });
+
+    socket.current.on('get-accounts', async () => {
+      let accounts = await getAccounts();
+      socket.current.emit('accounts', accounts);
+    });
+
+    socket.current.on('send-to-address', async (data) => {
+      try {
+        let sendAccountIndex = data.accountIndex;
+        let sendAddress = data.address;
+        let sendAmount = data.amount;
+        let sendPassword = data.password;
     
-    setSocket(initialSocket);
+        let accounts = await getAccounts();
+        let chosenAccount = accounts[sendAccountIndex];
+    
+        let utxos = utxoData.current[sendAccountIndex] || await getUtxos(undefined, undefined, chosenAccount);
+        const protocolParameters = parameters.current || await initTx();
+        console.log(utxos);
+        console.log(protocolParameters);
+
+        await Loader.load();
+    
+        const _value = {
+          ada: sendAmount,
+          assets: [],
+          minAda: "0",
+          personalAda: sendAmount
+        };
+        const _address = {
+          display: sendAddress,
+          result: sendAddress
+        };
+        const _message = '';
+    
+        const output = {
+          address: _address.result,
+          amount: [
+            {
+              unit: 'lovelace',
+              //quantity: _value.ada,
+              quantity: toUnit(_value.ada || '10000000'),
+            },
+          ],
+        };
+
+        const outputValue = await assetsToValue(output.amount);
+        const minAda = await minAdaRequired(
+          outputValue,
+          Loader.Cardano.BigNum.from_str(
+            protocolParameters.coinsPerUtxoWord
+          )
+        );
+    
+        if (BigInt(minAda) <= BigInt(toUnit(_value.personalAda || '0'))) {
+          const displayAda = parseFloat(
+            _value.personalAda.replace(/[,\s]/g, '')
+          ).toLocaleString('en-EN', { minimumFractionDigits: 6 });
+          output.amount[0].quantity = toUnit(_value.personalAda || '0');
+        }
+    
+        const outputs = Loader.Cardano.TransactionOutputs.new();
+        outputs.add(
+          Loader.Cardano.TransactionOutput.new(
+            _address.isM1
+              ? Loader.Cardano.Address.from_bech32(_address.result)
+              : Loader.Cardano.Address.from_bytes(
+                  await isValidAddress(_address.result)
+                ),
+            await assetsToValue(output.amount)
+          )
+        );
+    
+        const auxiliaryData = Loader.Cardano.AuxiliaryData.new();
+        const generalMetadata = Loader.Cardano.GeneralTransactionMetadata.new();
+    
+        if (generalMetadata.len() > 0) {
+          auxiliaryData.set_metadata(generalMetadata);
+        }
+    
+        const builtTx = await buildTx(
+          chosenAccount,
+          utxos,
+          outputs,
+          protocolParameters,
+          auxiliaryData.metadata() ? auxiliaryData : null
+        );
+
+        //If fee is above 2 ADA don't send. This is just a safeguard as one of my transactions somehow took 1 ada when testing as a fee.
+        if (parseInt(builtTx.body().fee().to_str()) > 2000000) return;
+    
+        const tx = Buffer.from(builtTx.to_bytes()).toString('hex');
+    
+        const txDes = Loader.Cardano.Transaction.from_bytes(
+          Buffer.from(tx, 'hex')
+        );
+    
+        try {
+          let txHash = await signAndSubmit(
+            txDes,
+            {
+              accountIndex: chosenAccount.index,
+              keyHashes: [chosenAccount.paymentKeyHash],
+            },
+            sendPassword
+          );
+
+          socket.current.emit('tx-sent', {
+            walletName: chosenAccount.name,
+            hash: txHash
+          });
+
+          console.log("SENT!");
+          console.log(txHash);
+        } catch (e) {
+          socket.current.emit('error-sending-tx', data);
+          console.log(e);
+        }
+      } catch (e) {
+        socket.current.emit('error-sending-tx', data);
+        console.log(e);
+      }
+    });
 
     return () => {
-      initialSocket.disconnect();
-      initialSocket.off('connect');
-      initialSocket.off('disconnect');
-      initialSocket.off('get-accounts');
-      initialSocket.off('send-to-address');
-      initialSocket.off('prime');
+      socket.current.disconnect();
+      socket.current.off('connect');
+      socket.current.off('disconnect');
+      socket.current.off('get-accounts');
+      socket.current.off('send-to-address');
+      socket.current.off('prime');
       utxoData.current = {};
-      parameters.current = {};
+      parameters.current = null;
     }
   }, []);
 
   const turnOnServer = async () => {
-    if (!socket.connected && !connecting) {
+    if (!socket.current.connected && !connecting) {
       try {
         //setSocket(await io('http://localhost:3001/'));
         setConnecting(true);
@@ -227,148 +366,8 @@ const Wallet = () => {
           autoConnect: false
         });
         */
-        socket.on('prime', async (data) => {
-          try {
-            let accounts = await getAccounts();
-  
-            for (let i = 0; i < data.length; i++) {
-              let index = data[i];
-              let chosenAccount = accounts[index];
-              let utxos = await getUtxos(undefined, undefined, chosenAccount);
-  
-              utxoData.current[index] = utxos;
-            }
 
-            parameters.current = await initTx();
-
-            socket.emit('primed-successfully');
-          } catch (e) {
-            socket.emit('error-priming');
-            console.log(e);
-          }
-        });
-
-        socket.on('get-accounts', async () => {
-          let accounts = await getAccounts();
-          socket.emit('accounts', accounts);
-        });
-
-        socket.on('send-to-address', async (data) => {
-          try {
-            let sendAccountIndex = data.accountIndex;
-            let sendAddress = data.address;
-            let sendAmount = data.amount;
-            let sendPassword = data.password;
-        
-            let accounts = await getAccounts();
-            let chosenAccount = accounts[sendAccountIndex];
-        
-            let utxos = utxoData.current[sendAccountIndex] || await getUtxos(undefined, undefined, chosenAccount);
-            const protocolParameters = parameters.current || await initTx();
-            await Loader.load();
-        
-            const _value = {
-              ada: sendAmount,
-              assets: [],
-              minAda: "0",
-              personalAda: sendAmount
-            };
-            const _address = {
-              display: sendAddress,
-              result: sendAddress
-            };
-            const _message = '';
-        
-            const output = {
-              address: _address.result,
-              amount: [
-                {
-                  unit: 'lovelace',
-                  //quantity: _value.ada,
-                  quantity: toUnit(_value.ada || '10000000'),
-                },
-              ],
-            };
-
-            const outputValue = await assetsToValue(output.amount);
-            const minAda = await minAdaRequired(
-              outputValue,
-              Loader.Cardano.BigNum.from_str(
-                protocolParameters.coinsPerUtxoWord
-              )
-            );
-        
-            if (BigInt(minAda) <= BigInt(toUnit(_value.personalAda || '0'))) {
-              const displayAda = parseFloat(
-                _value.personalAda.replace(/[,\s]/g, '')
-              ).toLocaleString('en-EN', { minimumFractionDigits: 6 });
-              output.amount[0].quantity = toUnit(_value.personalAda || '0');
-            }
-        
-            const outputs = Loader.Cardano.TransactionOutputs.new();
-            outputs.add(
-              Loader.Cardano.TransactionOutput.new(
-                _address.isM1
-                  ? Loader.Cardano.Address.from_bech32(_address.result)
-                  : Loader.Cardano.Address.from_bytes(
-                      await isValidAddress(_address.result)
-                    ),
-                await assetsToValue(output.amount)
-              )
-            );
-        
-            const auxiliaryData = Loader.Cardano.AuxiliaryData.new();
-            const generalMetadata = Loader.Cardano.GeneralTransactionMetadata.new();
-        
-            if (generalMetadata.len() > 0) {
-              auxiliaryData.set_metadata(generalMetadata);
-            }
-        
-            const builtTx = await buildTx(
-              chosenAccount,
-              utxos,
-              outputs,
-              protocolParameters,
-              auxiliaryData.metadata() ? auxiliaryData : null
-            );
-
-            //If fee is above 2 ADA don't send. This is just a safeguard as one of my transactions somehow took 1 ada when testing as a fee.
-            if (parseInt(builtTx.body().fee().to_str()) > 2000000) return;
-        
-            const tx = Buffer.from(builtTx.to_bytes()).toString('hex');
-        
-            const txDes = Loader.Cardano.Transaction.from_bytes(
-              Buffer.from(tx, 'hex')
-            );
-        
-            try {
-              let txHash = await signAndSubmit(
-                txDes,
-                {
-                  accountIndex: chosenAccount.index,
-                  keyHashes: [chosenAccount.paymentKeyHash],
-                },
-                sendPassword
-              );
-
-              socket.emit('tx-sent', {
-                walletName: chosenAccount.name,
-                hash: txHash
-              });
-
-              console.log("SENT!");
-              console.log(txHash);
-            } catch (e) {
-              socket.emit('error-sending-tx', data);
-              console.log(e);
-            }
-          } catch (e) {
-            socket.emit('error-sending-tx', data);
-            console.log(e);
-          }
-        });
-
-        socket.connect();
+        socket.current.connect();
       } catch (e) {
         console.error(e);
         //setSocket(null);
@@ -378,13 +377,13 @@ const Wallet = () => {
           duration: 3000,
           isClosable: true,
         });
-        socket.disconnect();
+        socket.current.disconnect();
       }
     }
   }
   const turnOffServer = () => {
-    if (socket.connected) {
-      socket.disconnect();
+    if (socket.current.connected) {
+      socket.current.disconnect();
       //setSocket(null);
       /*
       toast({
@@ -397,7 +396,7 @@ const Wallet = () => {
     }
   }
   const toggleServer = () => {
-    socket.connected ? turnOffServer() : turnOnServer();
+    (socket.current.connected && !connecting) ? turnOffServer() : turnOnServer();
   }
 
   const checkTransactions = () =>
@@ -887,7 +886,7 @@ const Wallet = () => {
 
           <Box
             position="absolute"
-            style={{ top: 186, right: connected ? 193 : 189 }}
+            style={{ top: 186, right: connected ? 226 : 223 }}
             width="20"
             height="8"
           >
@@ -900,7 +899,7 @@ const Wallet = () => {
               colorScheme={ connected ? "red" : "green" }
               shadow="md"
             >
-              { connected ? "Off" : "On" }
+              { connected ? "Turn Off" : "Turn On" }
             </Button>
           </Box>
 
