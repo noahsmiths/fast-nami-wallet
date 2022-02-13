@@ -182,6 +182,9 @@ const Wallet = () => {
     initialSocket.on('disconnect', () => {
       initialSocket.off('get-accounts');
       initialSocket.off('send-to-address');
+      initialSocket.off('prime');
+      utxoData.current = {};
+      parameters.current = {};
       
       setConnected(false);
       toast({
