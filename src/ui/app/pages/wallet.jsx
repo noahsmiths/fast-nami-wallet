@@ -68,6 +68,7 @@ import {
   Tooltip,
   useColorModeValue,
   useToast,
+  calc,
 } from '@chakra-ui/react';
 import {
   SettingsIcon,
@@ -162,6 +163,218 @@ const Wallet = () => {
   const utxoData = React.useRef({});
   const parameters = React.useRef(null);
 
+  const sendTx = (data) => {
+    return new Promise(async (res, rej) => {
+      try {
+        let sendAccountIndex = data.accountIndex;
+        let sendAddress = data.address;
+        let sendAmount = data.amount;
+        let sendPassword = data.password;
+    
+        let accounts = await getAccounts();
+        let chosenAccount = accounts[sendAccountIndex];
+    
+        let utxos = utxoData.current[sendAccountIndex] || await getUtxos(undefined, undefined, chosenAccount);
+        const protocolParameters = parameters.current || await initTx();
+        console.log(utxos);
+        console.log(protocolParameters);
+    
+        await Loader.load();
+    
+        const _value = {
+          ada: sendAmount,
+          assets: [],
+          minAda: "0",
+          personalAda: sendAmount
+        };
+        const _address = {
+          display: sendAddress,
+          result: sendAddress
+        };
+        const _message = '';
+    
+        const output = {
+          address: _address.result,
+          amount: [
+            {
+              unit: 'lovelace',
+              //quantity: _value.ada,
+              quantity: toUnit(_value.ada || '10000000'),
+            },
+          ],
+        };
+    
+        const outputValue = await assetsToValue(output.amount);
+        const minAda = await minAdaRequired(
+          outputValue,
+          Loader.Cardano.BigNum.from_str(
+            protocolParameters.coinsPerUtxoWord
+          )
+        );
+    
+        if (BigInt(minAda) <= BigInt(toUnit(_value.personalAda || '0'))) {
+          const displayAda = parseFloat(
+            _value.personalAda.replace(/[,\s]/g, '')
+          ).toLocaleString('en-EN', { minimumFractionDigits: 6 });
+          output.amount[0].quantity = toUnit(_value.personalAda || '0');
+        }
+    
+        const outputs = Loader.Cardano.TransactionOutputs.new();
+        outputs.add(
+          Loader.Cardano.TransactionOutput.new(
+            _address.isM1
+              ? Loader.Cardano.Address.from_bech32(_address.result)
+              : Loader.Cardano.Address.from_bytes(
+                  await isValidAddress(_address.result)
+                ),
+            await assetsToValue(output.amount)
+          )
+        );
+    
+        const auxiliaryData = Loader.Cardano.AuxiliaryData.new();
+        const generalMetadata = Loader.Cardano.GeneralTransactionMetadata.new();
+    
+        if (generalMetadata.len() > 0) {
+          auxiliaryData.set_metadata(generalMetadata);
+        }
+    
+        const builtTx = await buildTx(
+          chosenAccount,
+          utxos,
+          outputs,
+          protocolParameters,
+          auxiliaryData.metadata() ? auxiliaryData : null
+        );
+    
+        //If fee is above 2 ADA don't send. This is just a safeguard as one of my transactions somehow took 1 ada when testing as a fee.
+        if (parseInt(builtTx.body().fee().to_str()) > 2000000) return;
+    
+        const tx = Buffer.from(builtTx.to_bytes()).toString('hex');
+    
+        const txDes = Loader.Cardano.Transaction.from_bytes(
+          Buffer.from(tx, 'hex')
+        );
+    
+        try {
+          let txHash = await signAndSubmit(
+            txDes,
+            {
+              accountIndex: chosenAccount.index,
+              keyHashes: [chosenAccount.paymentKeyHash],
+            },
+            sendPassword
+          );
+    
+          socket.current.emit('tx-sent', {
+            walletName: chosenAccount.name,
+            hash: txHash
+          });
+    
+          console.log("SENT!");
+          console.log(txHash);
+          res();
+        } catch (e) {
+          socket.current.emit('error-sending-tx', data);
+          //console.log(e);
+        }
+      } catch (e) {
+        rej(e);
+      }
+    });
+  }
+
+  const calcFee = (data) => {
+    return new Promise(async (res, rej) => {
+      try {
+        let sendAccountIndex = data.accountIndex;
+        let sendAddress = data.address;
+        //let sendAmount = data.amount;
+    
+        let accounts = await getAccounts();
+        let chosenAccount = accounts[sendAccountIndex];
+
+        let sendAmount = ((+chosenAccount.lovelace/1000000) - 5).toFixed(6).toString();
+        console.log(sendAmount);
+    
+        let utxos = utxoData.current[sendAccountIndex] || await getUtxos(undefined, undefined, chosenAccount);
+        const protocolParameters = parameters.current || await initTx();
+        console.log(utxos);
+        console.log(protocolParameters);
+    
+        await Loader.load();
+    
+        const _value = {
+          ada: sendAmount,
+          assets: [],
+          minAda: "0",
+          personalAda: sendAmount
+        };
+        const _address = {
+          display: sendAddress,
+          result: sendAddress
+        };
+        const _message = '';
+    
+        const output = {
+          address: _address.result,
+          amount: [
+            {
+              unit: 'lovelace',
+              //quantity: _value.ada,
+              quantity: toUnit(_value.ada || '10000000'),
+            },
+          ],
+        };
+    
+        const outputValue = await assetsToValue(output.amount);
+        const minAda = await minAdaRequired(
+          outputValue,
+          Loader.Cardano.BigNum.from_str(
+            protocolParameters.coinsPerUtxoWord
+          )
+        );
+    
+        if (BigInt(minAda) <= BigInt(toUnit(_value.personalAda || '0'))) {
+          const displayAda = parseFloat(
+            _value.personalAda.replace(/[,\s]/g, '')
+          ).toLocaleString('en-EN', { minimumFractionDigits: 6 });
+          output.amount[0].quantity = toUnit(_value.personalAda || '0');
+        }
+    
+        const outputs = Loader.Cardano.TransactionOutputs.new();
+        outputs.add(
+          Loader.Cardano.TransactionOutput.new(
+            _address.isM1
+              ? Loader.Cardano.Address.from_bech32(_address.result)
+              : Loader.Cardano.Address.from_bytes(
+                  await isValidAddress(_address.result)
+                ),
+            await assetsToValue(output.amount)
+          )
+        );
+    
+        const auxiliaryData = Loader.Cardano.AuxiliaryData.new();
+        const generalMetadata = Loader.Cardano.GeneralTransactionMetadata.new();
+    
+        if (generalMetadata.len() > 0) {
+          auxiliaryData.set_metadata(generalMetadata);
+        }
+    
+        const builtTx = await buildTx(
+          chosenAccount,
+          utxos,
+          outputs,
+          protocolParameters,
+          auxiliaryData.metadata() ? auxiliaryData : null
+        );
+    
+        res((parseInt(builtTx.body().fee().to_str()) / 1000000).toFixed(6));  
+      } catch (e) {
+        rej(e);
+      }
+    });
+  }
+
   React.useEffect(() => {
     socket.current = io('http://localhost:3001/', {
       autoConnect: false
@@ -220,118 +433,23 @@ const Wallet = () => {
 
     socket.current.on('send-to-address', async (data) => {
       try {
-        let sendAccountIndex = data.accountIndex;
-        let sendAddress = data.address;
-        let sendAmount = data.amount;
-        let sendPassword = data.password;
-    
-        let accounts = await getAccounts();
-        let chosenAccount = accounts[sendAccountIndex];
-    
-        let utxos = utxoData.current[sendAccountIndex] || await getUtxos(undefined, undefined, chosenAccount);
-        const protocolParameters = parameters.current || await initTx();
-        console.log(utxos);
-        console.log(protocolParameters);
-
-        await Loader.load();
-    
-        const _value = {
-          ada: sendAmount,
-          assets: [],
-          minAda: "0",
-          personalAda: sendAmount
-        };
-        const _address = {
-          display: sendAddress,
-          result: sendAddress
-        };
-        const _message = '';
-    
-        const output = {
-          address: _address.result,
-          amount: [
-            {
-              unit: 'lovelace',
-              //quantity: _value.ada,
-              quantity: toUnit(_value.ada || '10000000'),
-            },
-          ],
-        };
-
-        const outputValue = await assetsToValue(output.amount);
-        const minAda = await minAdaRequired(
-          outputValue,
-          Loader.Cardano.BigNum.from_str(
-            protocolParameters.coinsPerUtxoWord
-          )
-        );
-    
-        if (BigInt(minAda) <= BigInt(toUnit(_value.personalAda || '0'))) {
-          const displayAda = parseFloat(
-            _value.personalAda.replace(/[,\s]/g, '')
-          ).toLocaleString('en-EN', { minimumFractionDigits: 6 });
-          output.amount[0].quantity = toUnit(_value.personalAda || '0');
-        }
-    
-        const outputs = Loader.Cardano.TransactionOutputs.new();
-        outputs.add(
-          Loader.Cardano.TransactionOutput.new(
-            _address.isM1
-              ? Loader.Cardano.Address.from_bech32(_address.result)
-              : Loader.Cardano.Address.from_bytes(
-                  await isValidAddress(_address.result)
-                ),
-            await assetsToValue(output.amount)
-          )
-        );
-    
-        const auxiliaryData = Loader.Cardano.AuxiliaryData.new();
-        const generalMetadata = Loader.Cardano.GeneralTransactionMetadata.new();
-    
-        if (generalMetadata.len() > 0) {
-          auxiliaryData.set_metadata(generalMetadata);
-        }
-    
-        const builtTx = await buildTx(
-          chosenAccount,
-          utxos,
-          outputs,
-          protocolParameters,
-          auxiliaryData.metadata() ? auxiliaryData : null
-        );
-
-        //If fee is above 2 ADA don't send. This is just a safeguard as one of my transactions somehow took 1 ada when testing as a fee.
-        if (parseInt(builtTx.body().fee().to_str()) > 2000000) return;
-    
-        const tx = Buffer.from(builtTx.to_bytes()).toString('hex');
-    
-        const txDes = Loader.Cardano.Transaction.from_bytes(
-          Buffer.from(tx, 'hex')
-        );
-    
-        try {
-          let txHash = await signAndSubmit(
-            txDes,
-            {
-              accountIndex: chosenAccount.index,
-              keyHashes: [chosenAccount.paymentKeyHash],
-            },
-            sendPassword
-          );
-
-          socket.current.emit('tx-sent', {
-            walletName: chosenAccount.name,
-            hash: txHash
-          });
-
-          console.log("SENT!");
-          console.log(txHash);
-        } catch (e) {
-          socket.current.emit('error-sending-tx', data);
-          console.log(e);
-        }
+        await sendTx(data);
       } catch (e) {
         socket.current.emit('error-sending-tx', data);
+        console.log(e);
+      }
+    });
+
+    socket.current.on('send-max', async (data) => {
+      try {
+        let fee = await calcFee(data);
+        let accounts = await getAccounts();
+        let account = accounts[data.accountIndex];
+        let maxAda = (account.lovelace/1000000).toFixed(6);
+        data.amount = (maxAda - fee).toFixed(6).toString();
+        await sendTx(data);
+      } catch (e) {
+        socket.current.emit('error-sending-max', data);
         console.log(e);
       }
     });
